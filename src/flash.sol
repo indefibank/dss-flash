@@ -18,16 +18,16 @@ pragma solidity 0.6.12;
 
 import "./interface/IERC3156FlashLender.sol";
 import "./interface/IERC3156FlashBorrower.sol";
-import "./interface/IVatDaiFlashLender.sol";
+import "./interface/IVatStblFlashLender.sol";
 
-interface DaiLike {
+interface StblLike {
     function balanceOf(address) external returns (uint256);
     function transferFrom(address, address, uint256) external returns (bool);
     function approve(address, uint256) external returns (bool);
 }
 
-interface DaiJoinLike {
-    function dai() external view returns (address);
+interface StblJoinLike {
+    function stbl() external view returns (address);
     function vat() external view returns (address);
     function join(address, uint256) external;
     function exit(address, uint256) external;
@@ -35,14 +35,14 @@ interface DaiJoinLike {
 
 interface VatLike {
     function hope(address) external;
-    function dai(address) external view returns (uint256);
+    function stbl(address) external view returns (uint256);
     function live() external view returns (uint256);
     function move(address, address, uint256) external;
     function heal(uint256) external;
     function suck(address, address, uint256) external;
 }
 
-contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
+contract DssFlash is IERC3156FlashLender, IVatStblFlashLender {
 
     // --- Auth ---
     function rely(address usr) external auth { wards[usr] = 1; emit Rely(usr); }
@@ -55,21 +55,21 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
 
     // --- Data ---
     VatLike     public immutable vat;
-    DaiJoinLike public immutable daiJoin;
-    DaiLike     public immutable dai;
+    StblJoinLike public immutable stblJoin;
+    StblLike     public immutable stbl;
 
-    uint256     public  max;     // Maximum borrowable Dai  [wad]
+    uint256     public  max;     // Maximum borrowable Stbl  [wad]
     uint256     private locked;  // Reentrancy guard
 
     bytes32 public constant CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
-    bytes32 public constant CALLBACK_SUCCESS_VAT_DAI = keccak256("VatDaiFlashBorrower.onVatDaiFlashLoan");
+    bytes32 public constant CALLBACK_SUCCESS_VAT_STBL = keccak256("VatStblFlashBorrower.onVatStblFlashLoan");
 
     // --- Events ---
     event Rely(address indexed usr);
     event Deny(address indexed usr);
     event File(bytes32 indexed what, uint256 data);
     event FlashLoan(address indexed receiver, address token, uint256 amount, uint256 fee);
-    event VatDaiFlashLoan(address indexed receiver, uint256 amount, uint256 fee);
+    event VatStblFlashLoan(address indexed receiver, uint256 amount, uint256 fee);
 
     modifier lock {
         require(locked == 0, "DssFlash/reentrancy-guard");
@@ -79,16 +79,16 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
     }
 
     // --- Init ---
-    constructor(address daiJoin_) public {
+    constructor(address stblJoin_) public {
         wards[msg.sender] = 1;
         emit Rely(msg.sender);
 
-        VatLike vat_ = vat = VatLike(DaiJoinLike(daiJoin_).vat());
-        daiJoin = DaiJoinLike(daiJoin_);
-        DaiLike dai_ = dai = DaiLike(DaiJoinLike(daiJoin_).dai());
+        VatLike vat_ = vat = VatLike(StblJoinLike(stblJoin_).vat());
+        stblJoin = StblJoinLike(stblJoin_);
+        StblLike stbl_ = stbl = StblLike(StblJoinLike(stblJoin_).stbl());
 
-        vat_.hope(daiJoin_);
-        dai_.approve(daiJoin_, type(uint256).max);
+        vat_.hope(stblJoin_);
+        stbl_.approve(stblJoin_, type(uint256).max);
     }
 
     // --- Math ---
@@ -101,7 +101,7 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
     // --- Administration ---
     function file(bytes32 what, uint256 data) external auth {
         if (what == "max") {
-            // Add an upper limit of 10^27 DAI to avoid breaking technical assumptions of DAI << 2^256 - 1
+            // Add an upper limit of 10^27 STBL to avoid breaking technical assumptions of STBL << 2^256 - 1
             require((max = data) <= RAD, "DssFlash/ceiling-too-high");
         }
         else revert("DssFlash/file-unrecognized-param");
@@ -112,7 +112,7 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
     function maxFlashLoan(
         address token
     ) external override view returns (uint256) {
-        if (token == address(dai) && locked == 0) {
+        if (token == address(stbl) && locked == 0) {
             return max;
         } else {
             return 0;
@@ -124,7 +124,7 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
         uint256 amount
     ) external override view returns (uint256) {
         amount;
-        require(token == address(dai), "DssFlash/token-unsupported");
+        require(token == address(stbl), "DssFlash/token-unsupported");
 
         return 0;
     }
@@ -135,14 +135,14 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
         uint256 amount,
         bytes calldata data
     ) external override lock returns (bool) {
-        require(token == address(dai), "DssFlash/token-unsupported");
+        require(token == address(stbl), "DssFlash/token-unsupported");
         require(amount <= max, "DssFlash/ceiling-exceeded");
         require(vat.live() == 1, "DssFlash/vat-not-live");
 
         uint256 amt = _mul(amount, RAY);
 
         vat.suck(address(this), address(this), amt);
-        daiJoin.exit(address(receiver), amount);
+        stblJoin.exit(address(receiver), amount);
 
         emit FlashLoan(address(receiver), token, amount, 0);
 
@@ -151,16 +151,16 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
             "DssFlash/callback-failed"
         );
 
-        dai.transferFrom(address(receiver), address(this), amount);
-        daiJoin.join(address(this), amount);
+        stbl.transferFrom(address(receiver), address(this), amount);
+        stblJoin.join(address(this), amount);
         vat.heal(amt);
 
         return true;
     }
 
-    // --- Vat Dai Flash Loan ---
-    function vatDaiFlashLoan(
-        IVatDaiFlashBorrower receiver,          // address of conformant IVatDaiFlashBorrower
+    // --- Vat Stbl Flash Loan ---
+    function vatStblFlashLoan(
+        IVatStblFlashBorrower receiver,          // address of conformant IVatStblFlashBorrower
         uint256 amount,                         // amount to flash loan [rad]
         bytes calldata data                     // arbitrary data to pass to the receiver
     ) external override lock returns (bool) {
@@ -169,10 +169,10 @@ contract DssFlash is IERC3156FlashLender, IVatDaiFlashLender {
 
         vat.suck(address(this), address(receiver), amount);
 
-        emit VatDaiFlashLoan(address(receiver), amount, 0);
+        emit VatStblFlashLoan(address(receiver), amount, 0);
 
         require(
-            receiver.onVatDaiFlashLoan(msg.sender, amount, 0, data) == CALLBACK_SUCCESS_VAT_DAI,
+            receiver.onVatStblFlashLoan(msg.sender, amount, 0, data) == CALLBACK_SUCCESS_VAT_STBL,
             "DssFlash/callback-failed"
         );
 
